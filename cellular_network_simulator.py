@@ -208,6 +208,19 @@ class CellularNetworkSimulator:
         else:
             raise ValueError("Unknown reuse_mode. Use 'reuse1', 'reuse3', or 'reuse9'.")
 
+    # CONVENIENCE: CONVERT TO dB
+    @staticmethod
+    def linear_to_dB(x: np.ndarray):
+        """
+        Convert linear values to dB. 
+        """
+        x = np.asarray(x)
+        out = np.empty_like(x, dtype=float)
+        finite_mask = np.isfinite(x) & (x > 0)
+        out[finite_mask] = 10 * np.log10(x[finite_mask])
+        out[~finite_mask] = 100.0  # arbitrary large number for +inf
+        return out
+    
     # SIR COMPUTATION
     def compute_sir_snapshot(self, reuse_mode: str = "reuse1"):
         """
@@ -270,19 +283,119 @@ class CellularNetworkSimulator:
         for i in range(num_snapshots):
             sir_samples[i, :] = self.compute_sir_snapshot(reuse_mode=reuse_mode)
         return sir_samples
+    
+    def compute_sir_snapshot_power_control(self, reuse_mode: str = "reuse1", eta: float = 0.0):
+        """
+        Compute SIR (linear) for the 3 users in the central cell (cell 0), for ONE snapshot,
+        INCLUDING fractional uplink power control with exponent eta (0..1).
 
-    # CONVENIENCE: CONVERT TO dB
-    @staticmethod
-    def linear_to_dB(x: np.ndarray):
+        Model used (per your formula with two independent shadow fadings for interferers):
+            Desired:      (L0 * X0) / (L0 * X0)^eta
+            Interferer k: (Lk * Xk) / (L'k * X'k)^eta
+
+        where:
+            Lk  = (Dk)^(-nu)     distance user_k -> CENTRAL BS (cell 0)
+            L'k = (D'k)^(-nu)    distance user_k -> OWN BS (its cell center)
+            Xk, X'k are independent lognormal shadow fading terms (linear scale)
         """
-        Convert linear values to dB. 
+        eta = float(eta)
+        if not (0.0 <= eta <= 1.0):
+            raise ValueError("eta must be in [0, 1].")
+
+        positions = self.generate_user_positions()
+        sir = np.zeros(3, dtype=float)
+
+        center0 = self.cell_centers[0]
+
+        for s in range(self.num_sectors):
+            # -------------------------
+            # Serving link (cell 0, sector s)
+            # -------------------------
+            user_serv = positions[0, s, :]
+            d_serv = max(np.linalg.norm(user_serv - center0), 1e-6)
+            L_serv = d_serv ** (-self.nu)
+
+            X_serv = self._shadow_fading_linear()[0]  # linear
+            desired_power = (L_serv * X_serv) / ((L_serv * X_serv) ** eta)
+
+            # -------------------------
+            # Interference (co-directional sectors only)
+            # -------------------------
+            interference = 0.0
+            for c in range(1, self.num_cells):  # exclude central cell
+                if not self._cells_share_frequency(c, 0, reuse_mode):
+                    continue
+
+                center_c = self.cell_centers[c]
+                user_int = positions[c, s, :]
+
+                # D_k: interferer user -> central BS
+                d_central = max(np.linalg.norm(user_int - center0), 1e-6)
+                L_k = d_central ** (-self.nu)
+
+                # D'_k: interferer user -> its OWN BS
+                d_own = max(np.linalg.norm(user_int - center_c), 1e-6)
+                Lp_k = d_own ** (-self.nu)
+
+                # Two independent shadow fading terms (linear)
+                X_k = self._shadow_fading_linear()[0]     # link to central BS
+                Xp_k = self._shadow_fading_linear()[0]    # link to own BS
+
+                interference += (L_k * X_k) / ((Lp_k * Xp_k) ** eta)
+
+            sir[s] = np.inf if interference <= 0.0 else (desired_power / interference)
+
+        return sir
+    
+    def run_monte_carlo_power_control(self, num_snapshots: int, reuse_mode: str = "reuse1", eta: float = 0.0):
         """
-        x = np.asarray(x)
-        out = np.empty_like(x, dtype=float)
-        finite_mask = np.isfinite(x) & (x > 0)
-        out[finite_mask] = 10 * np.log10(x[finite_mask])
-        out[~finite_mask] = 100.0  # arbitrary large number for +inf
-        return out
+        Run many snapshots and collect SIR samples (linear) for the 3 sectors of the central cell,
+        INCLUDING power control exponent eta.
+        """
+        sir_samples = np.zeros((num_snapshots, self.num_sectors), dtype=float)
+        for i in range(num_snapshots):
+            sir_samples[i, :] = self.compute_sir_snapshot_power_control(reuse_mode=reuse_mode, eta=eta)
+        return sir_samples
+
+
+    def find_best_eta(
+        self,
+        num_snapshots: int,
+        reuse_mode: str = "reuse1",
+        threshold_db: float = -5.0,
+        etas: np.ndarray | None = None):
+        """
+        Sweep eta in [0,1] and return the eta that maximizes:
+            percentage of users with SIR_dB >= threshold_db
+
+        Important: we reset RNG state before each eta so all etas see the same randomness
+        (fair comparison).
+        """
+        if etas is None:
+            etas = np.linspace(0.0, 1.0, 21)  # step 0.05
+
+        etas = np.asarray(etas, dtype=float)
+
+        # Save RNG state for fair comparisons
+        saved_state = self.rng.bit_generator.state
+
+        coverages = []
+        for eta in etas:
+            # reset RNG state so each eta uses identical random draws
+            self.rng.bit_generator.state = saved_state
+
+            sir_lin = self.run_monte_carlo_power_control(num_snapshots=num_snapshots, reuse_mode=reuse_mode, eta=float(eta))
+            sir_db = self.linear_to_dB(sir_lin).reshape(-1)  # all 3 sectors, all snapshots
+
+            coverage = float(np.mean(sir_db >= threshold_db) * 100.0)
+            coverages.append(coverage)
+
+        coverages = np.asarray(coverages, dtype=float)
+        best_idx = int(np.argmax(coverages))
+
+        return float(etas[best_idx]), float(coverages[best_idx]), etas, coverages
+
+
 
 
 
