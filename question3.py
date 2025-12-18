@@ -14,7 +14,7 @@ results = {}
 
 # Loop over path-loss exponents
 for nu in PATHLOSS_EXPS:
-    print(f"\n=== Path-loss exponent ν = {nu} ===")
+    print(f"\nPathloss exponent ν = {nu}")
 
     sim = CellularNetworkSimulator(
         cell_radius=1.0,
@@ -62,9 +62,9 @@ plt.axhline(0.97, color="green", linestyle=":", label="97% probability")
 
 plt.xlabel("SIR [dB]")
 plt.ylabel("CDF")
-plt.title("CDF of SIR for Different Path-Loss Exponents (Reuse 3)")
+plt.title("CDF of SIR for Different Pathloss Exponents (Reuse 3)")
 plt.grid(True, alpha=0.3)
 plt.legend()
 plt.tight_layout()
-plt.savefig("question3_sir_cdf_pathloss.png", dpi=300)
+plt.savefig("Figure_3_sir_cdf_pathloss.png", dpi=300)
 plt.show()
