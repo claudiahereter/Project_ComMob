@@ -308,9 +308,7 @@ class CellularNetworkSimulator:
         center0 = self.cell_centers[0]
 
         for s in range(self.num_sectors):
-            # -------------------------
             # Serving link (cell 0, sector s)
-            # -------------------------
             user_serv = positions[0, s, :]
             d_serv = max(np.linalg.norm(user_serv - center0), 1e-6)
             L_serv = d_serv ** (-self.nu)
@@ -318,9 +316,7 @@ class CellularNetworkSimulator:
             X_serv = self._shadow_fading_linear()[0]  # linear
             desired_power = (L_serv * X_serv) / ((L_serv * X_serv) ** eta)
 
-            # -------------------------
             # Interference (co-directional sectors only)
-            # -------------------------
             interference = 0.0
             for c in range(1, self.num_cells):  # exclude central cell
                 if not self._cells_share_frequency(c, 0, reuse_mode):
